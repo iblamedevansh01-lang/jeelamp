@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studyhall</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>html,body{margin:0;background:#1A1530}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+
+const {useState,useEffect,useRef,useCallback}=React;
+/* Local storage shim: works in any browser. Data stays on this device until a real backend is added. */
+window.storage = {
+  async get(k,shared){const v=localStorage.getItem((shared?'s:':'p:')+k);if(v===null)throw new Error('nf');return{key:k,value:v,shared};},
+  async set(k,v,shared){localStorage.setItem((shared?'s:':'p:')+k,v);return{key:k,value:v,shared};},
+  async delete(k,shared){localStorage.removeItem((shared?'s:':'p:')+k);return{key:k,deleted:true,shared};},
+  async list(p,shared){const pre=(shared?'s:':'p:')+(p||'');const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k.startsWith(pre))keys.push(k.slice(2));}return{keys,prefix:p,shared};}
+};
+const mk=(g)=>({size=18})=><span style={{fontSize:size,lineHeight:1,display:'inline-block'}}>{g}</span>;
+const Timer=mk('⏱'),Trophy=mk('🏆'),Users=mk('👥'),User=mk('👤'),Play=mk('▶'),Square=mk('■'),Plus=mk('+'),X=mk('✕'),Send=mk('➤'),Trash2=mk('🗑'),Flame=mk('🔥'),ChevronLeft=mk('‹'),Check=mk('✓');
+
+/* ---------- storage helpers (shared = visible to everyone) ---------- */
+const S = window.storage;
+async function sget(k, shared = true) {
+  try { const r = await S.get(k, shared); return r ? JSON.parse(r.value) : null; } catch (e) { return null; }
+}
+async function sset(k, v, shared = true) {
+  try { await S.set(k, JSON.stringify(v), shared); return true; } catch (e) { return false; }
+}
+async function sdel(k, shared = true) {
+  try { await S.delete(k, shared); } catch (e) {}
+}
+async function slist(p, shared = true) {
+  try { const r = await S.list(p, shared); return (r && r.keys) || []; } catch (e) { return []; }
+}
+
+/* ---------- small utils ---------- */
+const EMOJIS = ["📚", "🌙", "☕", "🌿", "🦉", "🐱", "🍵", "✏️", "🌸", "🔭", "🎧", "🪴"];
+const TINTS = ["#3B2F6B", "#5A3B63", "#2F4A5E", "#3F5B4F", "#6B4A3B", "#4A3F6B"];
+const keyOf = (d) => d.toLocaleDateString("en-CA");
+const todayKey = () => keyOf(new Date());
+const tint = (h) => TINTS[[...h].reduce((a, c) => a + c.charCodeAt(0), 0) % TINTS.length];
+const pad = (n) => String(n).padStart(2, "0");
+const clock = (s) => `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
+const dur = (s) => {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${pad(m)}m` : `${m}m`;
+};
+const isLive = (u, now) => u && u.live && now - u.live.start < 16 * 3600e3;
+const liveSec = (u, now) => (isLive(u, now) ? Math.max(0, Math.floor((now - u.live.start) / 1000)) : 0);
+const todaySec = (u, now) => ((u.days || {})[todayKey()] || 0) + liveSec(u, now);
+const lastDays = (n) => Array.from({ length: n }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (n - 1 - i)); return d; });
+const streakOf = (u) => {
+  let s = 0; const d = new Date();
+  if (!((u.days || {})[keyOf(d)] >= 60)) d.setDate(d.getDate() - 1);
+  while ((u.days || {})[keyOf(d)] >= 60) { s++; d.setDate(d.getDate() - 1); }
+  return s;
+};
+const ddayOf = (u) => {
+  if (!u.dday || !u.dday.date) return null;
+  const diff = Math.ceil((new Date(u.dday.date + "T00:00:00") - new Date(todayKey() + "T00:00:00")) / 86400000);
+  return { diff, name: u.dday.name };
+};
+
+/* ---------- shared pieces ---------- */
+function Avatar({ u, size = 44 }) {
+  return (
+    <div className="avatar" style={{ width: size, height: size, background: tint(u.handle), fontSize: size * 0.5 }}>
+      {u.emoji}
+    </div>
+  );
+}
+
+function Ring({ pct, live, children }) {
+  const r = 104, c = 2 * Math.PI * r;
+  return (
+    <div className="ringwrap">
+      <svg viewBox="0 0 240 240" className={live ? "ring glow" : "ring"}>
+        <defs>
+          <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#B9A7FF" />
+            <stop offset="1" stopColor="#FFB894" />
+          </linearGradient>
+        </defs>
+        <circle cx="120" cy="120" r={r} fill="none" stroke="var(--paper2)" strokeWidth="14" />
+        <circle cx="120" cy="120" r={r} fill="none" stroke="url(#rg)" strokeWidth="14" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - Math.min(1, pct))} transform="rotate(-90 120 120)"
+          style={{ transition: "stroke-dashoffset .8s ease" }} />
+      </svg>
+      <div className="ringinner">{children}</div>
+    </div>
+  );
+}
+
+function WeekBars({ u, goalSec }) {
+  const days = lastDays(7);
+  const vals = days.map((d) => (u.days || {})[keyOf(d)] || 0);
+  const max = Math.max(goalSec, ...vals, 1);
+  return (
+    <div className="week">
+      {days.map((d, i) => (
+        <div key={i} className="wcol">
+          <div className="wbar"><div className="wfill" style={{ height: `${(vals[i] / max) * 100}%` }} /></div>
+          <span className="wlab">{d.toLocaleDateString("en", { weekday: "narrow" })}</span>
+          <span className="wval">{vals[i] ? dur(vals[i]) : "-"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TodoList({ todos, editable, onToggle, onDelete }) {
+  if (!todos.length) return <p className="muted small">{editable ? "Nothing here yet. Add your first task above." : "No tasks listed."}</p>;
+  return (
+    <ul className="todos">
+      {todos.map((t) => (
+        <li key={t.id} className={t.done ? "done" : ""}>
+          <button className={"check" + (t.done ? " on" : "")} disabled={!editable} onClick={() => onToggle && onToggle(t.id)} aria-label="Toggle task">
+            {t.done && <Check size={14} />}
+          </button>
+          <span>{t.t}</span>
+          {editable && <button className="ghost" onClick={() => onDelete(t.id)} aria-label="Delete task"><Trash2 size={15} /></button>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/* ---------- onboarding ---------- */
+function Onboarding({ onDone }) {
+  const [handle, setHandle] = useState("");
+  const [emoji, setEmoji] = useState(EMOJIS[0]);
+  const [goal, setGoal] = useState(4);
+  const [err, setErr] = useState("");
+  const [existing, setExisting] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const go = async () => {
+    const h = handle.trim().toLowerCase();
+    if (!/^[a-z0-9_]{2,16}$/.test(h)) { setErr("Use 2 to 16 letters, numbers or underscores."); return; }
+    setBusy(true);
+    const found = await sget("u:" + h);
+    if (found) { setExisting(found); setErr(""); setBusy(false); return; }
+    const u = { handle: h, emoji, bio: "", goalH: Number(goal) || 4, dday: null, days: {}, todos: [], live: null, subject: "", joined: Date.now() };
+    await sset("u:" + h, u);
+    await sset("me", h, false);
+    onDone(u);
+  };
+  const signIn = async () => { await sset("me", existing.handle, false); onDone(existing); };
+
+  return (
+    <div className="screen onboard">
+      <h1 className="hero">Study together, quietly.</h1>
+      <p className="muted">Make a profile, run your study timer, keep a public to-do list, and join groups with friends.</p>
+      <div className="card">
+        <label className="lbl">Username</label>
+        <input className="inp" value={handle} onChange={(e) => { setHandle(e.target.value); setExisting(null); setErr(""); }} placeholder="e.g. mira_studies" maxLength={16} />
+        <label className="lbl">Pick an avatar</label>
+        <div className="emojis">
+          {EMOJIS.map((e) => (
+            <button key={e} className={"emo" + (emoji === e ? " sel" : "")} onClick={() => setEmoji(e)}>{e}</button>
+          ))}
+        </div>
+        <label className="lbl">Daily goal (hours)</label>
+        <input className="inp" type="number" min="1" max="16" value={goal} onChange={(e) => setGoal(e.target.value)} />
+        {err && <p className="err">{err}</p>}
+        {existing && (
+          <div className="notice">
+            <p>That username already exists. Is it yours?</p>
+            <button className="btn alt" onClick={signIn}>Yes, sign me in</button>
+          </div>
+        )}
+        <button className="btn" disabled={busy} onClick={go}>Create my profile</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- study tab ---------- */
+function Study({ me, now, update, users, openUser }) {
+  const [text, setText] = useState("");
+  const live = isLive(me, now);
+  const goalSec = me.goalH * 3600;
+  const total = todaySec(me, now);
+  const dd = ddayOf(me);
+  const studying = Object.values(users).filter((u) => u.handle !== me.handle && isLive(u, now));
+  const done = me.todos.filter((t) => t.done).length;
+
+  const start = () => update((d) => { d.live = { start: Date.now(), subject: d.subject || "" }; return d; });
+  const stop = () => update((d) => {
+    const sec = Math.floor((Date.now() - d.live.start) / 1000);
+    const k = todayKey();
+    if (sec > 0 && sec < 16 * 3600) d.days[k] = (d.days[k] || 0) + sec;
+    d.live = null; return d;
+  });
+  const addTodo = () => {
+    if (!text.trim()) return;
+    update((d) => { d.todos.push({ id: Date.now().toString(36), t: text.trim().slice(0, 100), done: false }); return d; });
+    setText("");
+  };
+
+  return (
+    <div className="screen">
+      {dd && <div className="dday">D{dd.diff > 0 ? "-" + dd.diff : dd.diff === 0 ? "-day" : "+" + Math.abs(dd.diff)} <span>{dd.name}</span></div>}
+      <Ring pct={total / goalSec} live={live}>
+        {live ? (
+          <>
+            <div className="big">{clock(liveSec(me, now))}</div>
+            <div className="muted small">{me.live.subject || "Studying"}</div>
+          </>
+        ) : (
+          <>
+            <div className="big">{dur(total)}</div>
+            <div className="muted small">of {me.goalH}h goal today</div>
+          </>
+        )}
+      </Ring>
+      {!live && (
+        <input className="inp center" placeholder="What are you studying?" value={me.subject || ""} maxLength={30}
+          onChange={(e) => update((d) => { d.subject = e.target.value; return d; })} />
+      )}
+      {live ? (
+        <button className="btn stop" onClick={stop}><Square size={16} /> Stop studying</button>
+      ) : (
+        <button className="btn" onClick={start}><Play size={16} /> Start studying</button>
+      )}
+
+      {studying.length > 0 && (
+        <div className="strip">
+          <span className="muted small">Studying now</span>
+          <div className="stripavs">
+            {studying.slice(0, 8).map((u) => (
+              <button key={u.handle} className="ghost" onClick={() => openUser(u.handle)}><Avatar u={u} size={34} /></button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="cardhead">
+          <h2>To-do</h2>
+          <span className="muted small">{done} of {me.todos.length} done · public</span>
+        </div>
+        <div className="addrow">
+          <input className="inp" placeholder="Add a task" value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addTodo()} />
+          <button className="btn small" onClick={addTodo} aria-label="Add task"><Plus size={18} /></button>
+        </div>
+        <TodoList todos={me.todos} editable
+          onToggle={(id) => update((d) => { const t = d.todos.find((x) => x.id === id); if (t) t.done = !t.done; return d; })}
+          onDelete={(id) => update((d) => { d.todos = d.todos.filter((x) => x.id !== id); return d; })} />
+        {done > 0 && (
+          <button className="link" onClick={() => update((d) => { d.todos = d.todos.filter((x) => !x.done); return d; })}>Clear finished tasks</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- people tab ---------- */
+function People({ users, me, now, openUser }) {
+  const list = Object.values(users).sort((a, b) => todaySec(b, now) - todaySec(a, now));
+  const liveCount = list.filter((u) => isLive(u, now)).length;
+  return (
+    <div className="screen">
+      <h1>Today's leaderboard</h1>
+      <p className="muted">{liveCount} studying right now. Tap anyone to see their tasks.</p>
+      <div className="list">
+        {list.map((u, i) => (
+          <button key={u.handle} className="person" onClick={() => openUser(u.handle)}>
+            <span className="rank">{i + 1}</span>
+            <Avatar u={u} />
+            <span className="pmain">
+              <b>{u.handle}{u.handle === me.handle ? " (you)" : ""}</b>
+              <span className="muted small">
+                {isLive(u, now) ? <><i className="dot pulse" /> {u.live.subject || "Studying"}</> : u.bio || "Not studying"}
+              </span>
+            </span>
+            <span className="ptime">{dur(todaySec(u, now))}</span>
+          </button>
+        ))}
+        {!list.length && <p className="muted">No one here yet.</p>}
+      </div>
+    </div>
+  );
+}
+
+function ProfileSheet({ u, now, onClose }) {
+  const dd = ddayOf(u);
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <button className="ghost close" onClick={onClose} aria-label="Close"><X size={20} /></button>
+        <div className="phead">
+          <Avatar u={u} size={64} />
+          <div>
+            <h2>{u.handle}</h2>
+            <p className="muted small">{u.bio || "No bio yet"}</p>
+          </div>
+        </div>
+        {isLive(u, now) && <p className="livetag"><i className="dot pulse" /> Studying {u.live.subject || ""} for {dur(liveSec(u, now))}</p>}
+        <div className="stats">
+          <div><b>{dur(todaySec(u, now))}</b><span className="muted small">today</span></div>
+          <div><b><Flame size={14} /> {streakOf(u)}</b><span className="muted small">day streak</span></div>
+          {dd && <div><b>D{dd.diff > 0 ? "-" + dd.diff : dd.diff === 0 ? "-day" : "+" + Math.abs(dd.diff)}</b><span className="muted small">{dd.name}</span></div>}
+        </div>
+        <WeekBars u={u} goalSec={u.goalH * 3600} />
+        <h3>To-do</h3>
+        <TodoList todos={u.todos || []} editable={false} />
+      </div>
+    </div>
+  );
+}
+
+/* ---------- groups ---------- */
+function Chat({ gid, me, isMember }) {
+  const [msgs, setMsgs] = useState([]);
+  const [text, setText] = useState("");
+  const box = useRef(null);
+  const load = useCallback(async () => { setMsgs((await sget("m:" + gid)) || []); }, [gid]);
+  useEffect(() => { load(); const i = setInterval(load, 4000); return () => clearInterval(i); }, [load]);
+  useEffect(() => { if (box.current) box.current.scrollTop = box.current.scrollHeight; }, [msgs.length]);
+  const send = async () => {
+    const t = text.trim(); if (!t) return;
+    setText("");
+    const cur = (await sget("m:" + gid)) || [];
+    const next = [...cur, { u: me, t: t.slice(0, 500), ts: Date.now() }].slice(-150);
+    setMsgs(next);
+    await sset("m:" + gid, next);
+  };
+  return (
+    <div className="chat">
+      <div className="msgs" ref={box}>
+        {!msgs.length && <p className="muted small center">No messages yet. Say hi to the group.</p>}
+        {msgs.map((m, i) => (
+          <div key={i} className={"msg" + (m.u === me ? " mine" : "")}>
+            {m.u !== me && <span className="who">{m.u}</span>}
+            <div className="bubble">{m.t}</div>
+            <span className="when">{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+          </div>
+        ))}
+      </div>
+      {isMember ? (
+        <div className="addrow">
+          <input className="inp" placeholder="Message the group" value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && send()} maxLength={500} />
+          <button className="btn small" onClick={send} aria-label="Send"><Send size={18} /></button>
+        </div>
+      ) : (
+        <p className="muted small center">Join this group to chat.</p>
+      )}
+    </div>
+  );
+}
+
+function GroupView({ g, me, users, now, back, refresh, openUser }) {
+  const isMember = g.members.includes(me);
+  const total = g.members.reduce((a, h) => a + (users[h] ? todaySec(users[h], now) : 0), 0);
+  const join = async () => {
+    const cur = (await sget("g:" + g.id)) || g;
+    if (!cur.members.includes(me)) cur.members.push(me);
+    await sset("g:" + g.id, cur); refresh();
+  };
+  const leave = async () => {
+    const cur = (await sget("g:" + g.id)) || g;
+    cur.members = cur.members.filter((h) => h !== me);
+    if (!cur.members.length) { await sdel("g:" + g.id); await sdel("m:" + g.id); back(); refresh(); return; }
+    if (cur.owner === me) cur.owner = cur.members[0];
+    await sset("g:" + g.id, cur); refresh();
+  };
+  const remove = async () => { await sdel("g:" + g.id); await sdel("m:" + g.id); back(); refresh(); };
+
+  return (
+    <div className="screen">
+      <button className="link back" onClick={back}><ChevronLeft size={16} /> All groups</button>
+      <div className="ghead">
+        <div className="gemoji">{g.emoji}</div>
+        <div>
+          <h1>{g.name}</h1>
+          <p className="muted small">{g.desc || "A study group"}</p>
+        </div>
+      </div>
+      <p className="muted small">{g.members.length} members · {dur(total)} studied today together</p>
+      <div className="memrow">
+        {g.members.map((h) => users[h] && (
+          <button key={h} className="mem" onClick={() => openUser(h)}>
+            <div className="memav"><Avatar u={users[h]} size={40} />{isLive(users[h], now) && <i className="dot pulse badge" />}</div>
+            <span className="small">{h}</span>
+            <span className="muted tiny">{dur(todaySec(users[h], now))}</span>
+          </button>
+        ))}
+      </div>
+      <Chat gid={g.id} me={me} isMember={isMember} />
+      <div className="actions">
+        {isMember ? <button className="link" onClick={leave}>Leave group</button> : <button className="btn" onClick={join}>Join group</button>}
+        {g.owner === me && <button className="link danger" onClick={remove}>Delete group</button>}
+      </div>
+    </div>
+  );
+}
+
+function Groups({ groups, me, users, now, refresh, openUser }) {
+  const [open, setOpen] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const [emoji, setEmoji] = useState(EMOJIS[0]);
+
+  const current = open && groups.find((g) => g.id === open);
+  if (current) return <GroupView g={current} me={me} users={users} now={now} back={() => setOpen(null)} refresh={refresh} openUser={openUser} />;
+
+  const create = async () => {
+    if (!name.trim()) return;
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    const g = { id, name: name.trim().slice(0, 30), desc: desc.trim().slice(0, 100), emoji, owner: me, members: [me], created: Date.now() };
+    await sset("g:" + id, g);
+    setName(""); setDesc(""); setCreating(false);
+    await refresh(); setOpen(id);
+  };
+
+  const mine = groups.filter((g) => g.members.includes(me));
+  const others = groups.filter((g) => !g.members.includes(me));
+  const card = (g) => {
+    const live = g.members.filter((h) => users[h] && isLive(users[h], now)).length;
+    return (
+      <button key={g.id} className="gcard" onClick={() => setOpen(g.id)}>
+        <div className="gemoji">{g.emoji}</div>
+        <span className="pmain">
+          <b>{g.name}</b>
+          <span className="muted small">{g.members.length} members{live ? ` · ${live} studying now` : ""}</span>
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <div className="screen">
+      <div className="cardhead">
+        <h1>Groups</h1>
+        <button className="btn small" onClick={() => setCreating(!creating)}>{creating ? <X size={18} /> : <><Plus size={16} /> New</>}</button>
+      </div>
+      {creating && (
+        <div className="card">
+          <label className="lbl">Group name</label>
+          <input className="inp" value={name} onChange={(e) => setName(e.target.value)} maxLength={30} placeholder="e.g. Midnight library" />
+          <label className="lbl">Short description</label>
+          <input className="inp" value={desc} onChange={(e) => setDesc(e.target.value)} maxLength={100} placeholder="Who is this group for?" />
+          <label className="lbl">Icon</label>
+          <div className="emojis">
+            {EMOJIS.map((e) => <button key={e} className={"emo" + (emoji === e ? " sel" : "")} onClick={() => setEmoji(e)}>{e}</button>)}
+          </div>
+          <button className="btn" onClick={create}>Create group</button>
+        </div>
+      )}
+      {mine.length > 0 && <><h3>Your groups</h3><div className="list">{mine.map(card)}</div></>}
+      <h3>Discover</h3>
+      <div className="list">
+        {others.map(card)}
+        {!others.length && <p className="muted small">{groups.length ? "You've joined every group." : "No groups yet. Create the first one."}</p>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- me tab ---------- */
+function Me({ me, now, update, signOut }) {
+  const all = Object.values(me.days || {}).reduce((a, b) => a + b, 0);
+  return (
+    <div className="screen">
+      <div className="phead">
+        <Avatar u={me} size={64} />
+        <div><h1>{me.handle}</h1><p className="muted small">Your public profile</p></div>
+      </div>
+      <div className="stats">
+        <div><b>{dur(todaySec(me, now))}</b><span className="muted small">today</span></div>
+        <div><b><Flame size={14} /> {streakOf(me)}</b><span className="muted small">day streak</span></div>
+        <div><b>{Math.floor(all / 3600)}h</b><span className="muted small">all time</span></div>
+      </div>
+      <div className="card">
+        <h2>This week</h2>
+        <WeekBars u={me} goalSec={me.goalH * 3600} />
+      </div>
+      <div className="card">
+        <h2>Edit profile</h2>
+        <label className="lbl">Avatar</label>
+        <div className="emojis">
+          {EMOJIS.map((e) => <button key={e} className={"emo" + (me.emoji === e ? " sel" : "")} onClick={() => update((d) => { d.emoji = e; return d; })}>{e}</button>)}
+        </div>
+        <label className="lbl">Bio</label>
+        <input className="inp" value={me.bio} maxLength={60} placeholder="A line about you" onChange={(e) => update((d) => { d.bio = e.target.value; return d; })} />
+        <label className="lbl">Daily goal (hours)</label>
+        <input className="inp" type="number" min="1" max="16" value={me.goalH} onChange={(e) => update((d) => { d.goalH = Math.max(1, Math.min(16, Number(e.target.value) || 1)); return d; })} />
+        <label className="lbl">Countdown to an exam (D-day)</label>
+        <input className="inp" placeholder="Name, e.g. Finals" value={(me.dday && me.dday.name) || ""} maxLength={24}
+          onChange={(e) => update((d) => { d.dday = { name: e.target.value, date: (d.dday && d.dday.date) || "" }; return d; })} />
+        <input className="inp" type="date" value={(me.dday && me.dday.date) || ""}
+          onChange={(e) => update((d) => { d.dday = { name: (d.dday && d.dday.name) || "Exam", date: e.target.value }; return d; })} />
+      </div>
+      <button className="link" onClick={signOut}>Sign out</button>
+    </div>
+  );
+}
+
+/* ---------- app ---------- */
+function App() {
+  const [ready, setReady] = useState(false);
+  const [me, setMe] = useState(null);
+  const [users, setUsers] = useState({});
+  const [groups, setGroups] = useState([]);
+  const [tab, setTab] = useState("study");
+  const [profile, setProfile] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const meRef = useRef(null);
+
+  const update = useCallback((fn) => {
+    const next = fn(JSON.parse(JSON.stringify(meRef.current)));
+    meRef.current = next; setMe(next); sset("u:" + next.handle, next);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const [uk, gk] = await Promise.all([slist("u:"), slist("g:")]);
+    const [us, gs] = await Promise.all([Promise.all(uk.map((k) => sget(k))), Promise.all(gk.map((k) => sget(k)))]);
+    const map = {};
+    us.filter(Boolean).forEach((u) => { map[u.handle] = u; });
+    if (meRef.current) map[meRef.current.handle] = meRef.current;
+    setUsers(map);
+    setGroups(gs.filter(Boolean).sort((a, b) => b.created - a.created));
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const h = await sget("me", false);
+      if (h) {
+        const u = await sget("u:" + h);
+        if (u) { meRef.current = u; setMe(u); }
+      }
+      await refresh();
+      setReady(true);
+    })();
+  }, [refresh]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    const p = setInterval(refresh, 8000);
+    return () => { clearInterval(t); clearInterval(p); };
+  }, [refresh]);
+
+  const onboarded = (u) => { meRef.current = u; setMe(u); refresh(); };
+  const signOut = async () => { await sdel("me", false); meRef.current = null; setMe(null); };
+
+  const viewUser = profile && (users[profile] || (me && me.handle === profile && me));
+
+  return (
+    <div className="app">
+      <style>{CSS}</style>
+      {!ready ? (
+        <div className="screen"><p className="muted center">Loading your desk...</p></div>
+      ) : !me ? (
+        <Onboarding onDone={onboarded} />
+      ) : (
+        <>
+          {tab === "study" && <Study me={me} now={now} update={update} users={users} openUser={setProfile} />}
+          {tab === "people" && <People users={users} me={me} now={now} openUser={setProfile} />}
+          {tab === "groups" && <Groups groups={groups} me={me.handle} users={users} now={now} refresh={refresh} openUser={setProfile} />}
+          {tab === "me" && <Me me={me} now={now} update={update} signOut={signOut} />}
+          <nav className="nav">
+            {[["study", Timer, "Study"], ["people", Trophy, "People"], ["groups", Users, "Groups"], ["me", User, "Me"]].map(([k, Icon, label]) => (
+              <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
+                <Icon size={20} /><span>{label}</span>
+              </button>
+            ))}
+          </nav>
+          {viewUser && <ProfileSheet u={viewUser} now={now} onClose={() => setProfile(null)} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- styles ---------- */
+const CSS = `
+:root{--ink:#1A1530;--paper:#251E40;--paper2:#30284F;--line:#3A3160;--text:#EFEAFB;--dim:#A199C2;--lav:#B9A7FF;--peach:#FFB894;--mint:#8DE8C4;--red:#FF8A9B}
+*{box-sizing:border-box}
+.app{min-height:100vh;background-color:var(--ink);background-image:radial-gradient(rgba(185,167,255,.14) 1px,transparent 1px);background-size:22px 22px;color:var(--text);font-family:ui-rounded,"SF Pro Rounded","Nunito","Segoe UI",system-ui,sans-serif;font-size:15px;line-height:1.45}
+.screen{max-width:480px;margin:0 auto;padding:22px 18px 110px;display:flex;flex-direction:column;gap:14px}
+h1{font-size:24px;margin:0;font-weight:700;letter-spacing:-.01em}
+h2{font-size:17px;margin:0;font-weight:700}
+h3{font-size:14px;margin:8px 0 0;color:var(--dim);font-weight:600}
+.hero{font-family:ui-serif,Georgia,"Times New Roman",serif;font-size:38px;line-height:1.1;font-weight:500;margin-top:30px}
+p{margin:0}
+.muted{color:var(--dim)} .small{font-size:13px} .tiny{font-size:11px} .center{text-align:center}
+.err{color:var(--red);font-size:13px}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--lav);outline-offset:2px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.cardhead{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.lbl{font-size:13px;color:var(--dim);margin-top:4px}
+.inp{width:100%;background:var(--ink);border:1px solid var(--line);border-radius:12px;padding:11px 13px;color:var(--text);font:inherit;min-width:0}
+.inp.center{text-align:center}
+.inp::placeholder{color:#7E76A3}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:14px;padding:13px 18px;background:var(--lav);color:#241A4A;font-weight:700}
+.btn.small{padding:10px 13px;border-radius:12px;flex-shrink:0}
+.btn.alt{background:var(--peach)}
+.btn.stop{background:var(--paper2);color:var(--text);border:1px solid var(--line)}
+.btn:disabled{opacity:.6}
+.link{background:none;border:0;color:var(--lav);padding:6px 0;text-align:left;font-size:14px;display:inline-flex;align-items:center;gap:4px}
+.link.danger{color:var(--red)}
+.ghost{background:none;border:0;padding:4px;color:var(--dim);display:inline-flex}
+.avatar{border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid var(--line)}
+.emojis{display:flex;flex-wrap:wrap;gap:8px}
+.emo{width:42px;height:42px;font-size:21px;border-radius:12px;background:var(--ink);border:1px solid var(--line)}
+.emo.sel{border-color:var(--lav);background:var(--paper2)}
+.notice{background:var(--paper2);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.ringwrap{position:relative;width:min(300px,78vw);aspect-ratio:1;margin:6px auto 0}
+.ring{width:100%;height:100%;transition:filter .6s}
+.ring.glow{filter:drop-shadow(0 0 14px rgba(255,184,148,.45))}
+.ringinner{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.big{font-size:44px;font-weight:300;font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.dday{align-self:center;background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-weight:700;color:var(--peach)}
+.dday span{color:var(--text);font-weight:500;margin-left:4px}
+.strip{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.stripavs{display:flex;gap:4px}
+.addrow{display:flex;gap:8px}
+.todos{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.todos li{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line)}
+.todos li span{flex:1;word-break:break-word}
+.todos li.done span{text-decoration:line-through;color:var(--dim)}
+.check{width:22px;height:22px;border-radius:7px;border:1.5px solid var(--lav);background:none;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#241A4A;padding:0}
+.check.on{background:var(--lav)}
+.list{display:flex;flex-direction:column;gap:8px}
+.person,.gcard{display:flex;align-items:center;gap:12px;background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:11px 14px;text-align:left;width:100%}
+.rank{width:18px;text-align:center;color:var(--dim);font-weight:700}
+.pmain{flex:1;display:flex;flex-direction:column;min-width:0}
+.pmain .small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ptime{font-weight:700;font-variant-numeric:tabular-nums;color:var(--peach)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mint);margin-right:4px}
+.pulse{animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.overlay{position:fixed;inset:0;background:rgba(10,7,25,.65);display:flex;align-items:flex-end;justify-content:center;z-index:20}
+.sheet{position:relative;background:var(--paper);border-top:1px solid var(--line);border-radius:24px 24px 0 0;width:100%;max-width:480px;max-height:86vh;overflow:auto;padding:22px 18px 30px;display:flex;flex-direction:column;gap:12px}
+.close{position:absolute;top:14px;right:14px}
+.phead{display:flex;align-items:center;gap:14px}
+.livetag{background:var(--paper2);border-radius:12px;padding:8px 12px;font-size:13px}
+.stats{display:flex;gap:10px}
+.stats>div{flex:1;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.stats b{font-size:17px;display:flex;align-items:center;gap:4px}
+.sheet .stats>div{background:var(--paper2)}
+.week{display:flex;gap:6px;align-items:flex-end}
+.wcol{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px}
+.wbar{width:100%;height:70px;background:var(--ink);border-radius:8px;display:flex;align-items:flex-end;overflow:hidden}
+.wfill{width:100%;background:linear-gradient(180deg,var(--lav),var(--peach));border-radius:8px;transition:height .6s}
+.wlab{font-size:12px;color:var(--dim)} .wval{font-size:10px;color:var(--dim)}
+.back{margin-bottom:-4px}
+.ghead{display:flex;gap:14px;align-items:center}
+.gemoji{width:48px;height:48px;border-radius:14px;background:var(--paper2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
+.memrow{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
+.mem{background:none;border:0;display:flex;flex-direction:column;align-items:center;gap:1px;min-width:56px}
+.memav{position:relative}
+.badge{position:absolute;right:-1px;bottom:-1px;margin:0;border:2px solid var(--ink);width:12px;height:12px}
+.chat{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.msgs{height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:2px}
+.msg{display:flex;flex-direction:column;align-items:flex-start;max-width:82%;gap:2px}
+.msg.mine{align-self:flex-end;align-items:flex-end}
+.who{font-size:12px;color:var(--peach)}
+.bubble{background:var(--paper2);padding:8px 12px;border-radius:14px 14px 14px 4px;word-break:break-word}
+.msg.mine .bubble{background:var(--lav);color:#241A4A;border-radius:14px 14px 4px 14px}
+.when{font-size:10px;color:var(--dim)}
+.actions{display:flex;justify-content:space-between;align-items:center}
+.nav{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:center;gap:4px;background:rgba(26,21,48,.92);backdrop-filter:blur(10px);border-top:1px solid var(--line);padding:8px 10px calc(8px + env(safe-area-inset-bottom));z-index:10}
+.nav button{flex:1;max-width:110px;background:none;border:0;display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--dim);font-size:12px;padding:6px;border-radius:12px}
+.nav button.on{color:var(--lav);background:var(--paper)}
+@media (prefers-reduced-motion:reduce){.pulse{animation:none}.wfill,.ring circle{transition:none}}
+`;
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script></body></html>
